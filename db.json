@@ -1,0 +1,6 @@
+{
+  "jugadores": [
+    { "id": 1, "nombre": "Jugador Uno", "baraja": [1, 2, 3] },
+    { "id": 2, "nombre": "Jugador Dos", "baraja": [4, 5, 6] }
+  ]
+}
