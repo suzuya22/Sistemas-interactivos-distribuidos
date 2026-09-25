@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "838294897667",
+    "firebase_url": "https://sistemas-distribuidos-jslm-default-rtdb.firebaseio.com",
+    "project_id": "sistemas-distribuidos-jslm",
+    "storage_bucket": "sistemas-distribuidos-jslm.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:838294897667:android:9433d927b463f07a9cba36",
+        "android_client_info": {
+          "package_name": "com.juanlopez.moonkeeper"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBF36-9X8J-Vt8ga_79oafcM_UYr9yMSXk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -1,0 +1,47 @@
+﻿[
+  {
+    "_id": "5f6eec605ada4e648c59fe65",
+    "username": "sebas12",
+    "password": "123",
+    "estado": true,
+    "data": {
+      "score": 0
+    }
+  },
+  {
+    "_id": "4bc660d7a03d4a59a818309f",
+    "username": "sebas1234",
+    "password": "1234",
+    "estado": true,
+    "data": {
+      "score": 0
+    }
+  },
+  {
+    "_id": "813086e32da347c9a317cc2e",
+    "username": "SEBAS12312312",
+    "password": "12345",
+    "estado": true,
+    "data": {
+      "score": 0
+    }
+  },
+  {
+    "_id": "10843faafa0d4cc890f65daf",
+    "username": "sebas12345",
+    "password": "12345",
+    "estado": true,
+    "data": {
+      "score": 0
+    }
+  },
+  {
+    "_id": "c01219cd46c945279ed8b305",
+    "username": "sebas123456",
+    "password": "1234",
+    "estado": true,
+    "data": {
+      "score": 0
+    }
+  }
+]
