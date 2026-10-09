@@ -33,8 +33,20 @@ public class CodigoAPI : MonoBehaviour
     [Header("Paneles de la UI")]
     [SerializeField] private GameObject loginPanel;
     [SerializeField] private GameObject registerPanel;
-    [SerializeField] private GameObject profilePanel;
+    [SerializeField] private GameObject profilePanel; // Lobby
     [SerializeField] private GameObject forgotPasswordPanel;
+    [SerializeField] private GameObject gamePanel; // Pantalla de Juego activa
+
+    [Header("Navegación del Lobby y Modos de Juego")]
+    [SerializeField] private Button practiceModeButton;
+    [SerializeField] private Button findMatchButton;
+    [SerializeField] private TMP_Text findMatchButtonText;
+    [SerializeField] private Button backToLobbyButton;
+    [SerializeField] private Button logoutButton;
+
+    [Header("Configuración de Sesión")]
+    [Tooltip("Si está en false, al arrancar el juego siempre empezará en el panel de Login limpio, sin auto-login.")]
+    [SerializeField] private bool autoLoginOnStartup = false;
 
     [Tooltip("Panel o Texto de Game Over. Si se asigna aquí o en gameOverScoreText, se activará al perder.")]
     [SerializeField] private GameObject gameOverPanel;
@@ -57,6 +69,15 @@ public class CodigoAPI : MonoBehaviour
     [SerializeField] private TMP_Text livesText;
     [SerializeField] private TMP_Text timerText;
 
+    [Tooltip("Texto en la pantalla de juego para mostrar tu nombre (ej: 'Sebas123').")]
+    [SerializeField] private TMP_Text inGamePlayerNameText;
+
+    [Tooltip("Texto en la pantalla de juego para mostrar el rival contra el que vas (ej: 'Rival: jugador2').")]
+    [SerializeField] private TMP_Text inGameRivalNameText;
+
+    [Tooltip("Texto para mostrar el puntaje del rival en partida 1v1 (ej: 'Rival: 120 pts').")]
+    [SerializeField] private TMP_Text rivalScoreText;
+
     [Tooltip("Opcional: Si se deja vacío (None), el aviso de combo aparece automáticamente flotando sobre la luna al destruirla y desaparece con fade.")]
     [SerializeField] private TMP_Text comboText;
 
@@ -78,6 +99,18 @@ public class CodigoAPI : MonoBehaviour
     [SerializeField] private TMP_Text profileUsernameText;
     [SerializeField] private TMP_Text statusText;
     [SerializeField] private TMP_Text leaderboardText;
+
+    // Estado de Matchmaking 1v1
+    private bool isSearchingMatch = false;
+    private bool is1v1Match = false;
+    private string currentMatchRoomId = "";
+    private string rivalUid = "";
+    private string rivalUsername = "";
+    private int rivalScore = 0;
+    private DatabaseReference currentMatchScoreRef;
+    private DatabaseReference roomListenerRef;
+    private DatabaseReference queueListenerRef;
+    private bool isCreatingMatchRoom = false;
 
     // Estado del Juego
     public int currentScore = 0;
@@ -106,6 +139,22 @@ public class CodigoAPI : MonoBehaviour
     private string currentUserId = "";
     private string currentUsername = "";
 
+    public static CodigoAPI Instance { get; private set; }
+    public string CurrentUserId => currentUserId;
+    public string CurrentUsername => currentUsername;
+    public DatabaseReference DatabaseRef => databaseRef;
+    public bool IsFirebaseInitialized => isFirebaseInitialized;
+    public TMP_FontAsset SharedFont => currentScoreText != null ? currentScoreText.font : null;
+    public Material SharedFontMaterial => currentScoreText != null ? currentScoreText.fontSharedMaterial : null;
+
+    public event Action<string, string> OnUserLoggedIn;
+    public event Action OnUserLoggedOut;
+
+    private void Awake()
+    {
+        Instance = this;
+    }
+
     private void Start()
     {
         currentLives = maxLives;
@@ -114,6 +163,71 @@ public class CodigoAPI : MonoBehaviour
         if (playAgainButton != null)
         {
             playAgainButton.onClick.AddListener(OnPlayAgainClick);
+        }
+
+        if (practiceModeButton != null)
+        {
+            practiceModeButton.onClick.AddListener(OnPracticeModeClicked);
+        }
+
+        if (findMatchButton != null)
+        {
+            findMatchButton.onClick.AddListener(OnFindMatchClicked);
+        }
+
+        // Si backToLobbyButton fue asignado por error al botón de Log out del Perfil
+        if (backToLobbyButton != null && profilePanel != null && backToLobbyButton.transform.IsChildOf(profilePanel.transform))
+        {
+            if (logoutButton == null)
+            {
+                logoutButton = backToLobbyButton;
+            }
+            backToLobbyButton = null;
+        }
+
+        // Si logoutButton no está asignado, buscarlo automáticamente dentro de profilePanel
+        if (logoutButton == null && profilePanel != null)
+        {
+            Button[] profileButtons = profilePanel.GetComponentsInChildren<Button>(true);
+            foreach (Button btn in profileButtons)
+            {
+                if (btn.gameObject.name.ToLower().Contains("log") || btn.gameObject.name.ToLower().Contains("cerrar"))
+                {
+                    logoutButton = btn;
+                    break;
+                }
+            }
+        }
+
+        if (logoutButton != null)
+        {
+            logoutButton.onClick.RemoveListener(OnLogoutClick);
+            logoutButton.onClick.AddListener(OnLogoutClick);
+        }
+
+        // Si backToLobbyButton no está asignado, buscar el botón dentro de gamePanel
+        if (backToLobbyButton == null && gamePanel != null)
+        {
+            Button[] gameButtons = gamePanel.GetComponentsInChildren<Button>(true);
+            foreach (Button btn in gameButtons)
+            {
+                if (btn != playAgainButton)
+                {
+                    backToLobbyButton = btn;
+                    break;
+                }
+            }
+        }
+
+        if (backToLobbyButton != null)
+        {
+            backToLobbyButton.onClick.RemoveListener(ReturnToLobby);
+            backToLobbyButton.onClick.AddListener(ReturnToLobby);
+        }
+
+        if (gamePanel != null)
+        {
+            gamePanel.SetActive(false);
         }
 
         HideGameOverUI();
@@ -130,7 +244,8 @@ public class CodigoAPI : MonoBehaviour
     private void Update()
     {
         // 1. Si la partida está activa, correr temporizador
-        if (isGameActive && profilePanel != null && profilePanel.activeInHierarchy)
+        bool isGamePanelActive = (gamePanel != null) ? gamePanel.activeInHierarchy : (profilePanel != null && profilePanel.activeInHierarchy);
+        if (isGameActive && isGamePanelActive)
         {
             gameTimer -= Time.deltaTime;
 
@@ -247,38 +362,120 @@ public class CodigoAPI : MonoBehaviour
     {
         SetStatus("Conectando con Firebase...");
 
-        FirebaseApp.CheckAndFixDependenciesAsync().ContinueWithOnMainThread(task =>
+        try
         {
-            DependencyStatus dependencyStatus = task.Result;
-
-            if (dependencyStatus == DependencyStatus.Available)
+            FirebaseApp.CheckAndFixDependenciesAsync().ContinueWithOnMainThread(task =>
             {
-                auth = FirebaseAuth.DefaultInstance;
-                database = FirebaseDatabase.GetInstance(DatabaseUrl);
-                databaseRef = database.RootReference;
-                isFirebaseInitialized = true;
-
-                Debug.Log("[Firebase] Inicializado correctamente.");
-
-                // Auto-login: Si ya hay un usuario con sesión abierta en Firebase
-                if (auth.CurrentUser != null)
+                if (task.IsFaulted || task.IsCanceled)
                 {
-                    currentUserId = auth.CurrentUser.UserId;
-                    CargarPerfilDeUsuario(currentUserId);
+                    Debug.LogWarning($"[Firebase] CheckAndFixDependenciesAsync con fallo: {task.Exception}");
+                    TryFallbackFirebaseInit();
+                    return;
                 }
-                else
+
+                try
                 {
-                    ShowLoginPanel();
-                    SetStatus("Listo para iniciar sesión.");
+                    DependencyStatus dependencyStatus = task.Result;
+                    if (dependencyStatus == DependencyStatus.Available)
+                    {
+                        InitFirebaseSuccess();
+                    }
+                    else
+                    {
+                        Debug.LogWarning($"[Firebase] Dependencias: {dependencyStatus}. Intentando fallback directo...");
+                        TryFallbackFirebaseInit();
+                    }
                 }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"[Firebase] Excepción leyendo resultado: {ex.Message}");
+                    TryFallbackFirebaseInit();
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning($"[Firebase] Error al invocar CheckAndFixDependenciesAsync: {ex.Message}");
+            TryFallbackFirebaseInit();
+        }
+    }
+
+    private void InitFirebaseSuccess()
+    {
+        try
+        {
+            auth = FirebaseAuth.DefaultInstance;
+            database = FirebaseDatabase.GetInstance(DatabaseUrl);
+            databaseRef = database.RootReference;
+            isFirebaseInitialized = true;
+
+            Debug.Log("[Firebase] Inicializado correctamente.");
+
+            if (auth.CurrentUser != null && autoLoginOnStartup)
+            {
+                currentUserId = auth.CurrentUser.UserId;
+                CargarPerfilDeUsuario(currentUserId);
             }
             else
             {
-                Debug.LogError($"[Firebase] No se pudieron resolver dependencias: {dependencyStatus}");
-                SetStatus($"Error de dependencias Firebase: {dependencyStatus}");
                 ShowLoginPanel();
+                SetStatus("Listo para iniciar sesión.");
             }
-        });
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"[Firebase] Error en InitFirebaseSuccess: {ex.Message}");
+            TryFallbackFirebaseInit();
+        }
+    }
+
+    private void TryFallbackFirebaseInit()
+    {
+        try
+        {
+            auth = FirebaseAuth.DefaultInstance;
+            database = FirebaseDatabase.GetInstance(DatabaseUrl);
+            databaseRef = database.RootReference;
+            isFirebaseInitialized = true;
+
+            Debug.Log("[Firebase] Inicializado vía fallback directo.");
+
+            if (auth.CurrentUser != null && autoLoginOnStartup)
+            {
+                currentUserId = auth.CurrentUser.UserId;
+                CargarPerfilDeUsuario(currentUserId);
+            }
+            else
+            {
+                ShowLoginPanel();
+                SetStatus("Listo para iniciar sesión.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"[Firebase] Fallback directo falló: {ex.Message}");
+            SetStatus("Error al conectar con Firebase.");
+            ShowLoginPanel();
+        }
+    }
+
+    private bool EnsureFirebaseInitialized()
+    {
+        if (isFirebaseInitialized && auth != null && databaseRef != null)
+            return true;
+
+        try
+        {
+            auth = FirebaseAuth.DefaultInstance;
+            database = FirebaseDatabase.GetInstance(DatabaseUrl);
+            databaseRef = database.RootReference;
+            isFirebaseInitialized = true;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     #endregion
@@ -295,6 +492,7 @@ public class CodigoAPI : MonoBehaviour
         if (registerPanel != null) registerPanel.SetActive(false);
         if (profilePanel != null) profilePanel.SetActive(false);
         if (forgotPasswordPanel != null) forgotPasswordPanel.SetActive(false);
+        if (gamePanel != null) gamePanel.SetActive(false);
         SetStatus("");
     }
 
@@ -308,6 +506,7 @@ public class CodigoAPI : MonoBehaviour
         if (registerPanel != null) registerPanel.SetActive(true);
         if (profilePanel != null) profilePanel.SetActive(false);
         if (forgotPasswordPanel != null) forgotPasswordPanel.SetActive(false);
+        if (gamePanel != null) gamePanel.SetActive(false);
         SetStatus("Ingresa nombre de usuario, correo y contraseña.");
     }
 
@@ -321,6 +520,7 @@ public class CodigoAPI : MonoBehaviour
         if (registerPanel != null) registerPanel.SetActive(false);
         if (profilePanel != null) profilePanel.SetActive(false);
         if (forgotPasswordPanel != null) forgotPasswordPanel.SetActive(true);
+        if (gamePanel != null) gamePanel.SetActive(false);
         SetStatus("Ingresa tu correo para enviarte el enlace de recuperación.");
     }
 
@@ -328,16 +528,374 @@ public class CodigoAPI : MonoBehaviour
     {
         if (loginPanel != null) loginPanel.SetActive(false);
         if (registerPanel != null) registerPanel.SetActive(false);
-        if (profilePanel != null) profilePanel.SetActive(true);
         if (forgotPasswordPanel != null) forgotPasswordPanel.SetActive(false);
+        if (gamePanel != null) gamePanel.SetActive(false);
+        if (profilePanel != null) profilePanel.SetActive(true);
 
         HideGameOverUI();
 
         if (profileUsernameText != null)
             profileUsernameText.text = "Bienvenido, " + displayName;
 
+        OnUserLoggedIn?.Invoke(currentUserId, currentUsername);
+
+        // En el lobby el juego permanece en espera de que el jugador elija modo
+        isGameActive = false;
+    }
+
+    public void OnPracticeModeClicked()
+    {
+        is1v1Match = false;
+        currentMatchRoomId = "";
+        rivalUid = "";
+        rivalUsername = "";
+        rivalScore = 0;
+
+        if (rivalScoreText != null)
+            rivalScoreText.gameObject.SetActive(false);
+
+        if (profilePanel != null) profilePanel.SetActive(false);
+        if (gamePanel != null) gamePanel.SetActive(true);
+
         StartGame();
     }
+
+    public void ReturnToLobby()
+    {
+        isGameActive = false;
+        isGameOverState = false;
+
+        BubbleSpawner[] spawners = FindObjectsOfType<BubbleSpawner>();
+        foreach (BubbleSpawner spawner in spawners)
+        {
+            spawner.ClearBubbles();
+            spawner.enabled = false;
+        }
+
+        if (is1v1Match)
+        {
+            LeaveMatchmaking();
+        }
+
+        HideGameOverUI();
+
+        if (gamePanel != null) gamePanel.SetActive(false);
+        if (profilePanel != null) profilePanel.SetActive(true);
+
+        if (!string.IsNullOrEmpty(currentUserId))
+        {
+            if (profileUsernameText != null)
+                profileUsernameText.text = "Bienvenido, " + currentUsername;
+
+            GetLeaderboard();
+        }
+    }
+
+    #region Matchmaking 1v1 en Tiempo Real (Actividad 5)
+
+    public void OnFindMatchClicked()
+    {
+        if (!EnsureFirebaseInitialized())
+        {
+            SetStatus("Firebase conectando... Espera un momento.");
+            return;
+        }
+
+        if (isSearchingMatch)
+        {
+            CancelMatchmakingSearch();
+        }
+        else
+        {
+            StartMatchmakingSearch();
+        }
+    }
+
+    private void StartMatchmakingSearch()
+    {
+        if (string.IsNullOrEmpty(currentUserId)) return;
+
+        isSearchingMatch = true;
+        isCreatingMatchRoom = false;
+
+        if (findMatchButtonText != null)
+            findMatchButtonText.text = "Cancelar busqueda";
+
+        SetStatus("Buscando oponente 1v1...");
+
+        // 1. Escuchar asignación de sala
+        if (roomListenerRef != null)
+        {
+            roomListenerRef.ValueChanged -= HandlePlayerRoomAssigned;
+        }
+        roomListenerRef = databaseRef.Child("matchmaking").Child("playerRooms").Child(currentUserId);
+        roomListenerRef.ValueChanged += HandlePlayerRoomAssigned;
+        roomListenerRef.OnDisconnect().RemoveValue();
+
+        // 2. Registrar presencia en la cola
+        var queueData = new Dictionary<string, object>
+        {
+            { "uid", currentUserId },
+            { "username", currentUsername },
+            { "timestamp", ServerValue.Timestamp }
+        };
+
+        var myQueueRef = databaseRef.Child("matchmaking").Child("queue").Child(currentUserId);
+        myQueueRef.SetValueAsync(queueData);
+        myQueueRef.OnDisconnect().RemoveValue();
+
+        // 3. Escuchar la cola en tiempo real (si alguien nuevo entra mientras esperamos)
+        if (queueListenerRef != null)
+        {
+            queueListenerRef.ChildAdded -= HandleQueueChildAdded;
+        }
+        queueListenerRef = databaseRef.Child("matchmaking").Child("queue");
+        queueListenerRef.ChildAdded += HandleQueueChildAdded;
+
+        // 4. Verificación inmediata de jugadores que ya estén esperando en la cola
+        databaseRef.Child("matchmaking").Child("queue").GetValueAsync().ContinueWithOnMainThread(task =>
+        {
+            if (!isSearchingMatch || isCreatingMatchRoom) return;
+
+            if (task.IsCompletedSuccessfully && task.Result.Exists)
+            {
+                foreach (DataSnapshot child in task.Result.Children)
+                {
+                    CheckQueueChildForMatch(child);
+                    if (isCreatingMatchRoom) break;
+                }
+            }
+        });
+    }
+
+    private void HandleQueueChildAdded(object sender, ChildChangedEventArgs args)
+    {
+        if (!isSearchingMatch || isCreatingMatchRoom) return;
+        if (args.Snapshot == null || !args.Snapshot.Exists) return;
+
+        CheckQueueChildForMatch(args.Snapshot);
+    }
+
+    private void CheckQueueChildForMatch(DataSnapshot child)
+    {
+        if (!isSearchingMatch || isCreatingMatchRoom) return;
+
+        string otherUid = child.Key;
+        if (string.IsNullOrEmpty(otherUid) || otherUid == currentUserId) return;
+
+        string otherUsername = child.Child("username").Value?.ToString() ?? "Rival";
+
+        // Regla determinística: El jugador con UID menor alfabéticamente crea la sala.
+        // Esto garantiza que solo UN cliente cree la sala y no haya duplicados ni bloqueos.
+        bool isHost = string.Compare(currentUserId, otherUid, StringComparison.Ordinal) < 0;
+
+        if (isHost)
+        {
+            isCreatingMatchRoom = true;
+            CreateMatchRoom(currentUserId, currentUsername, otherUid, otherUsername);
+        }
+    }
+
+    private void HandlePlayerRoomAssigned(object sender, ValueChangedEventArgs args)
+    {
+        if (!isSearchingMatch) return;
+        if (args.Snapshot != null && args.Snapshot.Exists && args.Snapshot.Value != null)
+        {
+            string roomId = args.Snapshot.Value.ToString();
+            if (!string.IsNullOrEmpty(roomId))
+            {
+                CleanupMatchmakingListeners();
+                ConnectToMatchRoom(roomId);
+            }
+        }
+    }
+
+    private void CreateMatchRoom(string p1Uid, string p1Name, string p2Uid, string p2Name)
+    {
+        string roomId = "room_" + Guid.NewGuid().ToString().Substring(0, 8);
+
+        var scores = new Dictionary<string, object>
+        {
+            { p1Uid, 0 },
+            { p2Uid, 0 }
+        };
+
+        var roomData = new Dictionary<string, object>
+        {
+            { "roomId", roomId },
+            { "player1", p1Uid },
+            { "player1Name", p1Name },
+            { "player2", p2Uid },
+            { "player2Name", p2Name },
+            { "status", "active" },
+            { "startTime", ServerValue.Timestamp },
+            { "scores", scores }
+        };
+
+        var updates = new Dictionary<string, object>
+        {
+            { $"matchmaking/rooms/{roomId}", roomData },
+            { $"matchmaking/playerRooms/{p1Uid}", roomId },
+            { $"matchmaking/playerRooms/{p2Uid}", roomId },
+            { $"matchmaking/queue/{p1Uid}", null },
+            { $"matchmaking/queue/{p2Uid}", null }
+        };
+
+        databaseRef.UpdateChildrenAsync(updates).ContinueWithOnMainThread(task =>
+        {
+            if (task.IsCompletedSuccessfully)
+            {
+                CleanupMatchmakingListeners();
+                ConnectToMatchRoom(roomId);
+            }
+            else
+            {
+                isCreatingMatchRoom = false;
+                Debug.LogError($"[CodigoAPI] Error al crear partida en matchmaking: {task.Exception}");
+                CancelMatchmakingSearch();
+                SetStatus("Error al crear partida.");
+            }
+        });
+    }
+
+    private void CleanupMatchmakingListeners()
+    {
+        if (roomListenerRef != null)
+        {
+            roomListenerRef.ValueChanged -= HandlePlayerRoomAssigned;
+            roomListenerRef = null;
+        }
+
+        if (queueListenerRef != null)
+        {
+            queueListenerRef.ChildAdded -= HandleQueueChildAdded;
+            queueListenerRef = null;
+        }
+
+        if (!string.IsNullOrEmpty(currentUserId) && databaseRef != null)
+        {
+            databaseRef.Child("matchmaking").Child("playerRooms").Child(currentUserId).RemoveValueAsync();
+            databaseRef.Child("matchmaking").Child("queue").Child(currentUserId).RemoveValueAsync();
+        }
+    }
+
+    public void ConnectToMatchRoom(string roomId)
+    {
+        isSearchingMatch = false;
+        isCreatingMatchRoom = false;
+
+        if (findMatchButtonText != null)
+            findMatchButtonText.text = "Buscar partida online";
+
+        CleanupMatchmakingListeners();
+
+        currentMatchRoomId = roomId;
+        is1v1Match = true;
+
+        if (currentMatchScoreRef != null)
+        {
+            currentMatchScoreRef.ValueChanged -= HandleRivalScoreChanged;
+            currentMatchScoreRef = null;
+        }
+
+        databaseRef.Child("matchmaking").Child("rooms").Child(roomId).GetValueAsync().ContinueWithOnMainThread(task =>
+        {
+            if (task.IsCompletedSuccessfully && task.Result.Exists)
+            {
+                DataSnapshot snap = task.Result;
+                string p1 = snap.Child("player1").Value?.ToString() ?? "";
+                string p2 = snap.Child("player2").Value?.ToString() ?? "";
+                string p1Name = snap.Child("player1Name").Value?.ToString() ?? "Jugador 1";
+                string p2Name = snap.Child("player2Name").Value?.ToString() ?? "Jugador 2";
+
+                if (currentUserId == p1)
+                {
+                    rivalUid = p2;
+                    rivalUsername = p2Name;
+                }
+                else
+                {
+                    rivalUid = p1;
+                    rivalUsername = p1Name;
+                }
+
+                rivalScore = 0;
+
+                currentMatchScoreRef = databaseRef.Child("matchmaking").Child("rooms").Child(roomId).Child("scores").Child(rivalUid);
+                currentMatchScoreRef.ValueChanged += HandleRivalScoreChanged;
+
+                if (profilePanel != null) profilePanel.SetActive(false);
+                if (gamePanel != null) gamePanel.SetActive(true);
+
+                if (rivalScoreText != null)
+                {
+                    rivalScoreText.gameObject.SetActive(true);
+                    rivalScoreText.text = $"Rival ({rivalUsername}): 0 pts";
+                }
+
+                SetStatus($"¡Partida 1v1 contra {rivalUsername}!");
+                StartGame();
+            }
+        });
+    }
+
+    private void HandleRivalScoreChanged(object sender, ValueChangedEventArgs args)
+    {
+        if (args.Snapshot != null && args.Snapshot.Exists && args.Snapshot.Value != null)
+        {
+            if (int.TryParse(args.Snapshot.Value.ToString(), out int rScore))
+            {
+                rivalScore = rScore;
+                if (rivalScoreText != null)
+                {
+                    rivalScoreText.text = $"Rival ({rivalUsername}): {rivalScore} pts";
+                }
+
+                if (inGameRivalNameText != null)
+                {
+                    inGameRivalNameText.text = $"Rival: {rivalUsername} ({rivalScore} pts)";
+                }
+            }
+        }
+    }
+
+    public void CancelMatchmakingSearch()
+    {
+        isSearchingMatch = false;
+        isCreatingMatchRoom = false;
+
+        if (findMatchButtonText != null)
+            findMatchButtonText.text = "Buscar partida online";
+
+        SetStatus("Busqueda de partida cancelada.");
+
+        CleanupMatchmakingListeners();
+    }
+
+    private void LeaveMatchmaking()
+    {
+        if (currentMatchScoreRef != null)
+        {
+            currentMatchScoreRef.ValueChanged -= HandleRivalScoreChanged;
+            currentMatchScoreRef = null;
+        }
+
+        if (!string.IsNullOrEmpty(currentMatchRoomId) && databaseRef != null)
+        {
+            databaseRef.Child("matchmaking").Child("rooms").Child(currentMatchRoomId).RemoveValueAsync();
+        }
+
+        currentMatchRoomId = "";
+        is1v1Match = false;
+        rivalUid = "";
+        rivalUsername = "";
+        rivalScore = 0;
+
+        if (rivalScoreText != null)
+            rivalScoreText.gameObject.SetActive(false);
+    }
+
+    #endregion
 
     private void HideGameOverUI()
     {
@@ -360,9 +918,9 @@ public class CodigoAPI : MonoBehaviour
 
     public void OnRegisterClick()
     {
-        if (!isFirebaseInitialized)
+        if (!EnsureFirebaseInitialized())
         {
-            SetStatus("Firebase aún se está inicializando. Espera un momento...");
+            SetStatus("Conectando con Firebase... Espera un momento.");
             return;
         }
 
@@ -433,9 +991,9 @@ public class CodigoAPI : MonoBehaviour
 
     public void OnLoginClick()
     {
-        if (!isFirebaseInitialized)
+        if (!EnsureFirebaseInitialized())
         {
-            SetStatus("Firebase aún se está inicializando. Espera un momento...");
+            SetStatus("Conectando con Firebase... Espera un momento.");
             return;
         }
 
@@ -513,9 +1071,9 @@ public class CodigoAPI : MonoBehaviour
 
     public void OnForgotPasswordClick()
     {
-        if (!isFirebaseInitialized)
+        if (!EnsureFirebaseInitialized())
         {
-            SetStatus("Firebase aún se está inicializando...");
+            SetStatus("Conectando con Firebase... Espera un momento.");
             return;
         }
 
@@ -584,6 +1142,24 @@ public class CodigoAPI : MonoBehaviour
             spawner.ClearBubbles();
         }
 
+        if (inGamePlayerNameText != null)
+        {
+            inGamePlayerNameText.text = !string.IsNullOrEmpty(currentUsername) ? currentUsername : "Jugador";
+        }
+
+        if (inGameRivalNameText != null)
+        {
+            if (is1v1Match)
+            {
+                inGameRivalNameText.gameObject.SetActive(true);
+                inGameRivalNameText.text = $"Rival: {rivalUsername}";
+            }
+            else
+            {
+                inGameRivalNameText.text = "Modo practica";
+            }
+        }
+
         UpdateGameUI();
     }
 
@@ -616,6 +1192,11 @@ public class CodigoAPI : MonoBehaviour
         }
         int earnedPoints = basePoints * comboMultiplier;
         currentScore += earnedPoints;
+
+        if (is1v1Match && !string.IsNullOrEmpty(currentMatchRoomId) && databaseRef != null)
+        {
+            databaseRef.Child("matchmaking").Child("rooms").Child(currentMatchRoomId).Child("scores").Child(currentUserId).SetValueAsync(currentScore);
+        }
 
         // 3. Recompensa de tiempo (+2 segundos normal, +4 segundos en Supernova)
         float bonusTime = BubbleSpawner.IsSupernovaActive ? (timeBonusPerMoon * 2f) : timeBonusPerMoon;
@@ -819,24 +1400,52 @@ public class CodigoAPI : MonoBehaviour
         SaveScoreOnGameOver(currentScore);
 
         // 1. Activar el texto/panel que el usuario asignó SIN alterar lo que escribió
-        if (gameOverPanel != null)
+        if (is1v1Match)
         {
-            gameOverPanel.SetActive(true);
-        }
+            string outcome;
+            if (currentScore > rivalScore)
+                outcome = $"VICTORIA!\nTu: {currentScore} pts  -  Rival ({rivalUsername}): {rivalScore} pts";
+            else if (currentScore < rivalScore)
+                outcome = $"DERROTA\nTu: {currentScore} pts  -  Rival ({rivalUsername}): {rivalScore} pts";
+            else
+                outcome = $"EMPATE!\nAmbos: {currentScore} pts";
 
-        if (gameOverScoreText != null)
-        {
-            gameOverScoreText.gameObject.SetActive(true);
-        }
-
-        // Si no asignó absolutamente nada, solo como salvavidas activamos el cartel básico
-        if (gameOverPanel == null && gameOverScoreText == null)
-        {
-            TMP_Text dynamicGO = GetOrCreateGameOverText();
-            if (dynamicGO != null)
+            if (gameOverScoreText != null)
             {
-                dynamicGO.gameObject.SetActive(true);
-                dynamicGO.text = "GAME OVER!";
+                gameOverScoreText.gameObject.SetActive(true);
+                gameOverScoreText.text = outcome;
+            }
+            else
+            {
+                TMP_Text dynamicGO = GetOrCreateGameOverText();
+                if (dynamicGO != null)
+                {
+                    dynamicGO.gameObject.SetActive(true);
+                    dynamicGO.text = outcome;
+                }
+            }
+        }
+        else
+        {
+            if (gameOverPanel != null)
+            {
+                gameOverPanel.SetActive(true);
+            }
+
+            if (gameOverScoreText != null)
+            {
+                gameOverScoreText.gameObject.SetActive(true);
+            }
+
+            // Si no asignó absolutamente nada, solo como salvavidas activamos el cartel básico
+            if (gameOverPanel == null && gameOverScoreText == null)
+            {
+                TMP_Text dynamicGO = GetOrCreateGameOverText();
+                if (dynamicGO != null)
+                {
+                    dynamicGO.gameObject.SetActive(true);
+                    dynamicGO.text = "GAME OVER!";
+                }
             }
         }
 
@@ -1408,6 +2017,17 @@ public class CodigoAPI : MonoBehaviour
         isGameOverState = false;
         HideGameOverUI();
 
+        if (isSearchingMatch)
+        {
+            CancelMatchmakingSearch();
+        }
+        if (is1v1Match)
+        {
+            LeaveMatchmaking();
+        }
+
+        OnUserLoggedOut?.Invoke();
+
         if (auth != null)
             auth.SignOut();
 
@@ -1422,11 +2042,20 @@ public class CodigoAPI : MonoBehaviour
             spawner.ClearBubbles();
         }
 
+        if (loginPasswordInput != null)
+            loginPasswordInput.text = "";
+
         ShowLoginPanel();
+
+        // Garantizar de forma inmediata y explícita el apagado de perfil y juego
+        if (profilePanel != null) profilePanel.SetActive(false);
+        if (gamePanel != null) gamePanel.SetActive(false);
+        if (loginPanel != null) loginPanel.SetActive(true);
+
         SetStatus("Sesión cerrada.");
     }
 
-    private void SetStatus(string message)
+    public void SetStatus(string message)
     {
         if (statusText != null)
             statusText.text = message;
